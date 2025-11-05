@@ -5,15 +5,32 @@ import { useQueryClient } from "@tryghost/admin-x-framework";
 import { useCurrentUser } from "@tryghost/admin-x-framework/api/currentUser";
 import { useEditUser, type User } from "@tryghost/admin-x-framework/api/users";
 
-const WhatsNewPreferencesSchema = z.object({
-    lastSeenDate: z.iso.datetime(),
-});
+const WhatsNewPreferencesCodec = z.codec(
+    z.object({ lastSeenDate: z.iso.datetime() }),
+    z.object({ lastSeenDate: z.date() }),
+    {
+        decode: (stored) => ({ lastSeenDate: new Date(stored.lastSeenDate) }),
+        encode: (working) => ({ lastSeenDate: working.lastSeenDate.toISOString() }),
+    }
+);
 
-const PreferencesSchema = z.looseObject({
-    whatsNew: WhatsNewPreferencesSchema.optional(),
-});
+const PreferencesCodec = z.codec(
+    z.looseObject({ whatsNew: z.object({ lastSeenDate: z.iso.datetime() }).optional() }),
+    z.looseObject({ whatsNew: z.object({ lastSeenDate: z.date() }).optional() }),
+    {
+        decode: (stored) => ({
+            ...stored,
+            whatsNew: stored.whatsNew ? WhatsNewPreferencesCodec.decode(stored.whatsNew) : undefined,
+        }),
+        encode: (working) => ({
+            ...working,
+            whatsNew: working.whatsNew ? WhatsNewPreferencesCodec.encode(working.whatsNew) : undefined,
+        }),
+    }
+);
 
-export type Preferences = z.infer<typeof PreferencesSchema>;
+export type Preferences = z.infer<typeof PreferencesCodec>;
+export type WhatsNewPreferences = z.output<typeof WhatsNewPreferencesCodec>;
 
 const userPreferencesQueryKey = (user: User | undefined) => ["userPreferences", user?.id, user?.accessibility] as const;
 
@@ -30,7 +47,7 @@ export const useUserPreferences = (): UseQueryResult<Preferences> => {
             const raw = user.accessibility || "{}";
             const parsed = JSON.parse(raw) as unknown;
 
-            return PreferencesSchema.parse(parsed);
+            return PreferencesCodec.parse(parsed);
         },
         enabled: !!user,
         staleTime: Infinity,
@@ -56,14 +73,17 @@ export const useEditUserPreferences = (): UseMutationResult<void, Error, Prefere
 
             const currentPreferences = queryClient.getQueryData<Preferences>(userPreferencesQueryKey(user)) ?? {};
 
-            const newPreferences = {
+            const newPreferences: Preferences = {
                 ...currentPreferences,
                 ...updatedPreferences,
             };
 
+            // Encode preferences for storage (recursively encodes all child codecs)
+            const encodedForStorage = PreferencesCodec.encode(newPreferences);
+
             await editUser({
                 ...user,
-                accessibility: JSON.stringify(newPreferences),
+                accessibility: JSON.stringify(encodedForStorage),
             });
         },
     });
