@@ -46,13 +46,14 @@ export const useEditSettings = createMutation<SettingsResponseType, Setting[]>({
             ...newData,
             settings: newData.settings
         })
-    }
+    },
+    invalidateQueries: {all: true}
 });
 
 export const useDeleteStripeSettings = createMutation<unknown, null>({
     method: 'DELETE',
     path: () => '/settings/stripe/connect/',
-    invalidateQueries: {dataType}
+    invalidateQueries: {all: true}
 });
 
 export const useTestSlack = createMutation<unknown, null>({

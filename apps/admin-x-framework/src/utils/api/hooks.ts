@@ -150,7 +150,7 @@ interface MutationOptions<ResponseData, Payload> extends Omit<QueryOptions<Respo
     headers?: Record<string, string>;
     body?: (payload: Payload) => FormData | object;
     searchParams?: (payload: Payload) => { [key: string]: string; };
-    invalidateQueries?: { dataType: string; };
+    invalidateQueries?: { dataType: string; all?: never } | { all: true, dataType?: never };
     updateQueries?: { dataType: string; emberUpdateType: 'createOrUpdate' | 'delete' | 'skip'; update: (newData: ResponseData, currentData: unknown, payload: Payload) => unknown };
 }
 
@@ -184,9 +184,13 @@ export const createMutation = <ResponseData, Payload>({path, searchParams, defau
     const {onUpdate, onInvalidate, onDelete} = useFramework();
 
     const afterMutate = useCallback((newData: ResponseData, payload: Payload) => {
-        if (invalidateQueries) {
+        if (invalidateQueries?.dataType) {
             queryClient.invalidateQueries([invalidateQueries.dataType]);
             onInvalidate(invalidateQueries.dataType);
+        }
+
+        if (invalidateQueries?.all) {
+            queryClient.invalidateQueries();
         }
 
         if (updateQueries) {
