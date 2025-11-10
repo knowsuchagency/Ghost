@@ -19,7 +19,7 @@ function AppSidebarContent() {
                 <NavGhostPro />
             </div>
             <div className="flex flex-col gap-2">
-                <Banner variant='gradient' size='lg' className="mx-5 my-2 flex flex-col items-stretch">
+                <Banner variant='gradient' size='lg' className="mx-2 my-5 flex flex-col items-stretch">
                     <div>
                         <img src={ghostProLogo} alt="Ghost Pro" className="max-h-[33px]" />
                     </div>
