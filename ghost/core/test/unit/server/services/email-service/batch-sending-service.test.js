@@ -309,6 +309,9 @@ describe('Batch Sending Service', function () {
             const Member = createModelClass({});
             const EmailBatch = createModelClass({});
             const newsletter = createModel({});
+            const domainWarmingService = {
+                isEnabled: () => false
+            };
 
             // Create 16 members in single line
             const members = new Array(16).fill(0).map(i => createModel({
@@ -355,6 +358,7 @@ describe('Batch Sending Service', function () {
 
             const service = new BatchSendingService({
                 models: {Member, EmailBatch},
+                domainWarmingService,
                 emailRenderer: {
                     getSegments() {
                         return [null];
@@ -408,6 +412,9 @@ describe('Batch Sending Service', function () {
             const Member = createModelClass({});
             const EmailBatch = createModelClass({});
             const newsletter = createModel({});
+            const domainWarmingService = {
+                isEnabled: () => false
+            };
 
             // Create 16 members in single line
             const members = new Array(16).fill(0).map(i => createModel({
@@ -452,6 +459,7 @@ describe('Batch Sending Service', function () {
 
             const service = new BatchSendingService({
                 models: {Member, EmailBatch},
+                domainWarmingService,
                 sentry: {
                     captureMessage
                 },
@@ -490,6 +498,9 @@ describe('Batch Sending Service', function () {
             const Member = createModelClass({});
             const EmailBatch = createModelClass({});
             const newsletter = createModel({});
+            const domainWarmingService = {
+                isEnabled: () => false
+            };
 
             // Create 16 members in single line
             const members = [
@@ -537,6 +548,7 @@ describe('Batch Sending Service', function () {
 
             const service = new BatchSendingService({
                 models: {Member, EmailBatch},
+                domainWarmingService,
                 emailRenderer: {
                     getSegments() {
                         return ['status:free', 'status:-free'];
@@ -584,6 +596,9 @@ describe('Batch Sending Service', function () {
             const Member = createModelClass({});
             const EmailBatch = createModelClass({});
             const newsletter = createModel({});
+            const domainWarmingService = {
+                isEnabled: () => false
+            };
 
             const members = [
                 createModel({
@@ -642,6 +657,7 @@ describe('Batch Sending Service', function () {
 
             const service = new BatchSendingService({
                 models: {Member, EmailBatch},
+                domainWarmingService,
                 emailRenderer: {
                     getSegments() {
                         return ['status:free'];
@@ -680,6 +696,507 @@ describe('Batch Sending Service', function () {
 
             // Check email_count set
             assert.equal(email.get('email_count'), 3);
+        });
+
+        describe('Domain warming', function () {
+            it('creates batches with domain warming disabled', async function () {
+                const Member = createModelClass({});
+                const EmailBatch = createModelClass({});
+                const newsletter = createModel({});
+
+                const members = new Array(10).fill(0).map(i => createModel({
+                    email: `example${i}@example.com`,
+                    uuid: `member${i}`,
+                    newsletters: [newsletter]
+                }));
+
+                Member.getFilteredCollectionQuery = ({filter}) => {
+                    const q = nql(filter);
+                    const all = members.filter((member) => {
+                        return q.queryJSON(member.toJSON());
+                    });
+
+                    all.sort((a, b) => {
+                        return b.id.localeCompare(a.id);
+                    });
+                    return createDb({
+                        all: all.map(member => member.toJSON())
+                    });
+                };
+
+                const db = createDb({});
+                const domainWarmingService = {
+                    isEnabled: sinon.stub().returns(false)
+                };
+
+                const service = new BatchSendingService({
+                    models: {Member, EmailBatch},
+                    domainWarmingService,
+                    emailRenderer: {
+                        getSegments() {
+                            return [null];
+                        }
+                    },
+                    sendingService: {
+                        getMaximumRecipients() {
+                            return 5;
+                        }
+                    },
+                    emailSegmenter: {
+                        getMemberFilterForSegment(n) {
+                            return `newsletters.id:'${n.id}'`;
+                        }
+                    },
+                    db
+                });
+
+                const email = createModel({});
+
+                const batches = await service.createBatches({
+                    email,
+                    post: createModel({}),
+                    newsletter
+                });
+
+                assert.equal(batches.length, 2);
+
+                // Check all batches use custom domain
+                batches.forEach((batch) => {
+                    assert.equal(batch.get('fallback_sending_domain'), false);
+                });
+            });
+
+            it('creates batches with domain warming enabled and limit below total count', async function () {
+                const Member = createModelClass({});
+                const EmailBatch = createModelClass({});
+                const newsletter = createModel({});
+
+                const members = new Array(10).fill(0).map(i => createModel({
+                    email: `example${i}@example.com`,
+                    uuid: `member${i}`,
+                    newsletters: [newsletter]
+                }));
+
+                Member.getFilteredCollectionQuery = ({filter}) => {
+                    const q = nql(filter);
+                    const all = members.filter((member) => {
+                        return q.queryJSON(member.toJSON());
+                    });
+
+                    all.sort((a, b) => {
+                        return b.id.localeCompare(a.id);
+                    });
+                    return createDb({
+                        all: all.map(member => member.toJSON())
+                    });
+                };
+
+                const db = createDb({});
+                const insert = sinon.spy(db, 'insert');
+                const domainWarmingService = {
+                    isEnabled: sinon.stub().returns(true)
+                };
+
+                const service = new BatchSendingService({
+                    models: {Member, EmailBatch},
+                    domainWarmingService,
+                    emailRenderer: {
+                        getSegments() {
+                            return [null];
+                        }
+                    },
+                    sendingService: {
+                        getMaximumRecipients() {
+                            return 5;
+                        }
+                    },
+                    emailSegmenter: {
+                        getMemberFilterForSegment(n) {
+                            return `newsletters.id:'${n.id}'`;
+                        }
+                    },
+                    db
+                });
+
+                const email = createModel({
+                    csd_email_count: 7 // Warmup limit is 7
+                });
+
+                const batches = await service.createBatches({
+                    email,
+                    post: createModel({}),
+                    newsletter
+                });
+
+                // Should create 3 batches: 5 custom domain, 2 custom domain, 3 fallback
+                assert.equal(batches.length, 3);
+
+                // Check batch domains
+                assert.equal(batches[0].get('fallback_sending_domain'), false);
+                assert.equal(batches[1].get('fallback_sending_domain'), false);
+                assert.equal(batches[2].get('fallback_sending_domain'), true);
+
+                // Check recipient counts
+                const calls = insert.getCalls();
+                assert.equal(calls.length, 3);
+                assert.equal(calls[0].args[0].length, 5);
+                assert.equal(calls[1].args[0].length, 2);
+                assert.equal(calls[2].args[0].length, 3);
+
+                // Check csd_email_count is updated
+                assert.equal(email.get('csd_email_count'), 7);
+            });
+
+            it('creates batches with domain warming when limit equals total count', async function () {
+                const Member = createModelClass({});
+                const EmailBatch = createModelClass({});
+                const newsletter = createModel({});
+
+                const members = new Array(10).fill(0).map(i => createModel({
+                    email: `example${i}@example.com`,
+                    uuid: `member${i}`,
+                    newsletters: [newsletter]
+                }));
+
+                Member.getFilteredCollectionQuery = ({filter}) => {
+                    const q = nql(filter);
+                    const all = members.filter((member) => {
+                        return q.queryJSON(member.toJSON());
+                    });
+
+                    all.sort((a, b) => {
+                        return b.id.localeCompare(a.id);
+                    });
+                    return createDb({
+                        all: all.map(member => member.toJSON())
+                    });
+                };
+
+                const db = createDb({});
+                const domainWarmingService = {
+                    isEnabled: sinon.stub().returns(true)
+                };
+
+                const service = new BatchSendingService({
+                    models: {Member, EmailBatch},
+                    domainWarmingService,
+                    emailRenderer: {
+                        getSegments() {
+                            return [null];
+                        }
+                    },
+                    sendingService: {
+                        getMaximumRecipients() {
+                            return 5;
+                        }
+                    },
+                    emailSegmenter: {
+                        getMemberFilterForSegment(n) {
+                            return `newsletters.id:'${n.id}'`;
+                        }
+                    },
+                    db
+                });
+
+                const email = createModel({
+                    csd_email_count: 10 // Warmup limit equals total count
+                });
+
+                const batches = await service.createBatches({
+                    email,
+                    post: createModel({}),
+                    newsletter
+                });
+
+                // Should create 2 batches, all using custom domain
+                assert.equal(batches.length, 2);
+
+                // Check all batches use custom domain
+                batches.forEach((batch) => {
+                    assert.equal(batch.get('fallback_sending_domain'), false);
+                });
+            });
+
+            it('creates batches with domain warming when limit exceeds total count', async function () {
+                const Member = createModelClass({});
+                const EmailBatch = createModelClass({});
+                const newsletter = createModel({});
+
+                const members = new Array(10).fill(0).map(i => createModel({
+                    email: `example${i}@example.com`,
+                    uuid: `member${i}`,
+                    newsletters: [newsletter]
+                }));
+
+                Member.getFilteredCollectionQuery = ({filter}) => {
+                    const q = nql(filter);
+                    const all = members.filter((member) => {
+                        return q.queryJSON(member.toJSON());
+                    });
+
+                    all.sort((a, b) => {
+                        return b.id.localeCompare(a.id);
+                    });
+                    return createDb({
+                        all: all.map(member => member.toJSON())
+                    });
+                };
+
+                const db = createDb({});
+                const domainWarmingService = {
+                    isEnabled: sinon.stub().returns(true)
+                };
+
+                const service = new BatchSendingService({
+                    models: {Member, EmailBatch},
+                    domainWarmingService,
+                    emailRenderer: {
+                        getSegments() {
+                            return [null];
+                        }
+                    },
+                    sendingService: {
+                        getMaximumRecipients() {
+                            return 5;
+                        }
+                    },
+                    emailSegmenter: {
+                        getMemberFilterForSegment(n) {
+                            return `newsletters.id:'${n.id}'`;
+                        }
+                    },
+                    db
+                });
+
+                const email = createModel({
+                    csd_email_count: 20 // Warmup limit exceeds total count
+                });
+
+                const batches = await service.createBatches({
+                    email,
+                    post: createModel({}),
+                    newsletter
+                });
+
+                // Should create 2 batches, all using custom domain
+                assert.equal(batches.length, 2);
+
+                // Check all batches use custom domain
+                batches.forEach((batch) => {
+                    assert.equal(batch.get('fallback_sending_domain'), false);
+                });
+            });
+
+            it('splits a single batch when domain warming limit falls in the middle', async function () {
+                const Member = createModelClass({});
+                const EmailBatch = createModelClass({});
+                const newsletter = createModel({});
+
+                const members = new Array(10).fill(0).map(i => createModel({
+                    email: `example${i}@example.com`,
+                    uuid: `member${i}`,
+                    newsletters: [newsletter]
+                }));
+
+                Member.getFilteredCollectionQuery = ({filter}) => {
+                    const q = nql(filter);
+                    const all = members.filter((member) => {
+                        return q.queryJSON(member.toJSON());
+                    });
+
+                    all.sort((a, b) => {
+                        return b.id.localeCompare(a.id);
+                    });
+                    return createDb({
+                        all: all.map(member => member.toJSON())
+                    });
+                };
+
+                const db = createDb({});
+                const insert = sinon.spy(db, 'insert');
+                const domainWarmingService = {
+                    isEnabled: sinon.stub().returns(true)
+                };
+
+                const service = new BatchSendingService({
+                    models: {Member, EmailBatch},
+                    domainWarmingService,
+                    emailRenderer: {
+                        getSegments() {
+                            return [null];
+                        }
+                    },
+                    sendingService: {
+                        getMaximumRecipients() {
+                            return 5;
+                        }
+                    },
+                    emailSegmenter: {
+                        getMemberFilterForSegment(n) {
+                            return `newsletters.id:'${n.id}'`;
+                        }
+                    },
+                    db
+                });
+
+                const email = createModel({
+                    csd_email_count: 3 // Split happens in first batch
+                });
+
+                const batches = await service.createBatches({
+                    email,
+                    post: createModel({}),
+                    newsletter
+                });
+
+                // Should create 3 batches: 3 custom domain (split), 2 fallback (split), 5 fallback
+                assert.equal(batches.length, 3);
+
+                // Check batch domains
+                assert.equal(batches[0].get('fallback_sending_domain'), false);
+                assert.equal(batches[1].get('fallback_sending_domain'), true);
+                assert.equal(batches[2].get('fallback_sending_domain'), true);
+
+                // Check recipient counts
+                const calls = insert.getCalls();
+                assert.equal(calls.length, 3);
+                assert.equal(calls[0].args[0].length, 3);
+                assert.equal(calls[1].args[0].length, 2);
+                assert.equal(calls[2].args[0].length, 5);
+            });
+
+            it('handles domain warming with csd_email_count as undefined', async function () {
+                const Member = createModelClass({});
+                const EmailBatch = createModelClass({});
+                const newsletter = createModel({});
+
+                const members = new Array(5).fill(0).map(i => createModel({
+                    email: `example${i}@example.com`,
+                    uuid: `member${i}`,
+                    newsletters: [newsletter]
+                }));
+
+                Member.getFilteredCollectionQuery = ({filter}) => {
+                    const q = nql(filter);
+                    const all = members.filter((member) => {
+                        return q.queryJSON(member.toJSON());
+                    });
+
+                    all.sort((a, b) => {
+                        return b.id.localeCompare(a.id);
+                    });
+                    return createDb({
+                        all: all.map(member => member.toJSON())
+                    });
+                };
+
+                const db = createDb({});
+                const domainWarmingService = {
+                    isEnabled: sinon.stub().returns(true)
+                };
+
+                const service = new BatchSendingService({
+                    models: {Member, EmailBatch},
+                    domainWarmingService,
+                    emailRenderer: {
+                        getSegments() {
+                            return [null];
+                        }
+                    },
+                    sendingService: {
+                        getMaximumRecipients() {
+                            return 5;
+                        }
+                    },
+                    emailSegmenter: {
+                        getMemberFilterForSegment(n) {
+                            return `newsletters.id:'${n.id}'`;
+                        }
+                    },
+                    db
+                });
+
+                const email = createModel({
+                // csd_email_count is undefined, should treat as Infinity
+                });
+
+                const batches = await service.createBatches({
+                    email,
+                    post: createModel({}),
+                    newsletter
+                });
+
+                // Should create 1 batch using custom domain
+                assert.equal(batches.length, 1);
+                assert.equal(batches[0].get('fallback_sending_domain'), false);
+            });
+
+            it('updates email_count and csd_email_count when actual count differs', async function () {
+                const Member = createModelClass({});
+                const EmailBatch = createModelClass({});
+                const newsletter = createModel({});
+
+                const members = new Array(10).fill(0).map(i => createModel({
+                    email: `example${i}@example.com`,
+                    uuid: `member${i}`,
+                    newsletters: [newsletter]
+                }));
+
+                Member.getFilteredCollectionQuery = ({filter}) => {
+                    const q = nql(filter);
+                    const all = members.filter((member) => {
+                        return q.queryJSON(member.toJSON());
+                    });
+
+                    all.sort((a, b) => {
+                        return b.id.localeCompare(a.id);
+                    });
+                    return createDb({
+                        all: all.map(member => member.toJSON())
+                    });
+                };
+
+                const db = createDb({});
+                const domainWarmingService = {
+                    isEnabled: sinon.stub().returns(true)
+                };
+
+                const service = new BatchSendingService({
+                    models: {Member, EmailBatch},
+                    domainWarmingService,
+                    emailRenderer: {
+                        getSegments() {
+                            return [null];
+                        }
+                    },
+                    sendingService: {
+                        getMaximumRecipients() {
+                            return 5;
+                        }
+                    },
+                    emailSegmenter: {
+                        getMemberFilterForSegment(n) {
+                            return `newsletters.id:'${n.id}'`;
+                        }
+                    },
+                    db
+                });
+
+                const email = createModel({
+                    email_count: 15, // Wrong count
+                    csd_email_count: 7
+                });
+
+                await service.createBatches({
+                    email,
+                    post: createModel({}),
+                    newsletter
+                });
+
+                // Check that email_count was updated
+                assert.equal(email.get('email_count'), 10);
+                assert.equal(email.get('csd_email_count'), 7);
+            });
         });
     });
 
@@ -1128,6 +1645,86 @@ describe('Batch Sending Service', function () {
 
             const {deliveryTime: outputDeliveryTime} = sendingService.send.firstCall.args[1];
             assert.equal(inputDeliveryTime, outputDeliveryTime);
+        });
+
+        describe('Domain warming', function () {
+            it('Does send with fallback sending domain', async function () {
+                const EmailBatch = createModelClass({
+                    findOne: {
+                        status: 'pending',
+                        member_segment: null,
+                        fallback_sending_domain: true
+                    }
+                });
+                const sendingService = {
+                    send: sinon.stub().resolves({id: 'providerid@example.com'}),
+                    getMaximumRecipients: () => 5
+                };
+
+                const findOne = sinon.spy(EmailBatch, 'findOne');
+                const service = new BatchSendingService({
+                    models: {EmailBatch, EmailRecipient},
+                    sendingService
+                });
+
+                const result = await service.sendBatch({
+                    email: createModel({}),
+                    batch: createModel({}),
+                    post: createModel({}),
+                    newsletter: createModel({})
+                });
+
+                assert.equal(result, true);
+                sinon.assert.notCalled(errorLog);
+                sinon.assert.calledOnce(sendingService.send);
+
+                sinon.assert.calledOnce(findOne);
+                const batch = await findOne.firstCall.returnValue;
+                assert.equal(batch.get('status'), 'submitted');
+                assert.equal(batch.get('provider_id'), 'providerid@example.com');
+
+                const {useFallbackAddress} = sendingService.send.firstCall.args[1];
+                assert.equal(useFallbackAddress, true);
+            });
+
+            it('Does send without fallback sending domain', async function () {
+                const EmailBatch = createModelClass({
+                    findOne: {
+                        status: 'pending',
+                        member_segment: null,
+                        fallback_sending_domain: false
+                    }
+                });
+                const sendingService = {
+                    send: sinon.stub().resolves({id: 'providerid@example.com'}),
+                    getMaximumRecipients: () => 5
+                };
+
+                const findOne = sinon.spy(EmailBatch, 'findOne');
+                const service = new BatchSendingService({
+                    models: {EmailBatch, EmailRecipient},
+                    sendingService
+                });
+
+                const result = await service.sendBatch({
+                    email: createModel({}),
+                    batch: createModel({}),
+                    post: createModel({}),
+                    newsletter: createModel({})
+                });
+
+                assert.equal(result, true);
+                sinon.assert.notCalled(errorLog);
+                sinon.assert.calledOnce(sendingService.send);
+
+                sinon.assert.calledOnce(findOne);
+                const batch = await findOne.firstCall.returnValue;
+                assert.equal(batch.get('status'), 'submitted');
+                assert.equal(batch.get('provider_id'), 'providerid@example.com');
+
+                const {useFallbackAddress} = sendingService.send.firstCall.args[1];
+                assert.equal(useFallbackAddress, false);
+            });
         });
 
         it('Does save error', async function () {
